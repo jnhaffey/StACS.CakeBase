@@ -194,6 +194,14 @@ Task("Restore-Build-Package-Tests")
 					ConfigFile = "./nuget.config"
 				});
 			Information("Finished NuGet Restore for {0}", testProject.Name);
+
+			Information("Starting Build for {0}", testProject.Name);
+			DotNetCoreBuild(testProject.ProjectFile.FullPath, new DotNetCoreBuildSettings()
+			{
+				Configuration = parameters.Configuration
+			});
+			project.MarkNewBuildComplete();
+			Information("Finished Build for {0}", testProject.Name);
 		}
 	});
 	
