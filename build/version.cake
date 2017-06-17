@@ -15,7 +15,11 @@ public class BuildVersion
 	{
 		get
 		{
-			var semVersion = Major + "." + Minor + "." + Build + "." + Revision;
+			var semVersion = Major + "." + Minor + "." + Build;
+			if(this.Revision >= 0)
+			{
+				semVersion += "." + Revision;
+			}
 			if(IsPre)
 			{
 				semVersion += "-PRE";

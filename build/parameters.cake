@@ -10,6 +10,7 @@ public class Parameters
 	public ICollection<Project> Projects { get; private set; }
 	public ICollection<Project> Tests { get; private set; }
 	public DirectoryPath SolutionDirectory { get; private set; }
+	public DirectoryPath ArtifactDirectory { get; private set; }
 
 	public void Initialize(ICakeContext context, ICollection<GitDiffFile> gitDiffs)
 	{
@@ -64,7 +65,8 @@ public class Parameters
 			Configuration = context.Argument("configuration", "Release"),
 			BumpVersion = bump,
 			IsReleaseBuild = false,
-			SolutionDirectory = context.Environment.WorkingDirectory.FullPath
+			SolutionDirectory = context.Environment.WorkingDirectory.FullPath,
+			ArtifactDirectory = context.Environment.WorkingDirectory.FullPath + "/artifacts/"
 		};
 	}
 
@@ -109,5 +111,15 @@ public class Parameters
 			}
 		}
 		context.Information("");
+	}
+
+	public FilePathCollection GetLatestNuGetPackageNames()
+	{
+		var pathList = new List<FilePath>();
+		foreach(var project in this.Projects)
+		{
+			pathList.Add(new FilePath(this.ArtifactDirectory.FullPath + "/" + project.GetCurrentPackageName));
+		}
+		return new FilePathCollection(pathList, new PathComparer(true));
 	}
 }

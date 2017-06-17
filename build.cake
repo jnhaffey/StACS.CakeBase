@@ -83,7 +83,19 @@ Task("Clean-All-Build-Folders")
 		{
 			CleanDirectory(project.BuildFolder.FullPath);
 		}
-		CleanDirectory(parameters.SolutionDirectory.FullPath + "/artifacts");
+		
+		var allFiles = GetFiles(parameters.ArtifactDirectory.FullPath + "/*.nupkg");
+		Information("Package Files Found: {0}", allFiles.Count());
+		var filesToKeep = parameters.GetLatestNuGetPackageNames();
+		Information("Package Files To Keep: {0}", filesToKeep.Count());
+		
+		foreach(var file in allFiles)
+		{
+			if(filesToKeep.FirstOrDefault(ftk => ftk.FullPath == file.FullPath) == null)
+			{
+				DeleteFile(file);
+			}			
+		}
 	});
 
 Task("Update-Project-Versions")

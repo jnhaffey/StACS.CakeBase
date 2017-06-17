@@ -55,6 +55,14 @@ public class Project
 		}
 	}
 
+	public string GetCurrentPackageName
+	{
+		get
+		{
+			return String.Format("{0}.{1}.{2}.{3}.nupkg", this.Name, this.Version.Major, this.Version.Minor, this.Version.Build);
+		}
+	}
+
 	public void AddProjectReferenceData(ICollection<string> solutionProjectNames)
 	{
 		var projectFile = XElement.Load(this.ProjectFile.FullPath);
