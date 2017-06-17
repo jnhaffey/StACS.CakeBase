@@ -200,7 +200,7 @@ Task("Restore-Build-Package-Tests")
 			{
 				Configuration = parameters.Configuration
 			});
-			project.MarkNewBuildComplete();
+			testProject.MarkNewBuildComplete();
 			Information("Finished Build for {0}", testProject.Name);
 		}
 	});
