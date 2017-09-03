@@ -1,6 +1,6 @@
 # StACS.CakeBase
 This uses [Cake Build](https://github.com/cake-build/cake) as the backing to run.
-Currently, I do not have a way to package this so that you can install it into your project.
+Currently, I do not have a way to package this so that you can install it into your solution.
 If you have a way to do this, please contact me.
 This script was designed to build solutions such as _frameworks_ that are modular.
 
