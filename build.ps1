@@ -1,11 +1,4 @@
-##########################################################################
-# This is the Cake bootstrapper script for PowerShell.
-# This file was downloaded from https://github.com/cake-build/resources
-# Feel free to change this file to fit your needs.
-##########################################################################
-
 <#
-
 .SYNOPSIS
 This is a Powershell script to bootstrap a Cake build.
 
@@ -19,42 +12,31 @@ The build script to execute.
 The build script target to run.
 .PARAMETER Configuration
 The build configuration to use.
+.PARAMETER SegementBump
+The version segment to increment, if threshold is not met
+.PARAMETER NextSegmentThreshold
+The threshold (%) of file changes before next version segment is incremented automatically
 .PARAMETER Verbosity
 Specifies the amount of information to be displayed.
-.PARAMETER Experimental
-Tells Cake to use the latest Roslyn release.
-.PARAMETER WhatIf
-Performs a dry run of the build script.
-No tasks will be executed.
-.PARAMETER Mono
-Tells Cake to use the Mono scripting engine.
-.PARAMETER SkipToolPackageRestore
-Skips restoring of packages.
-.PARAMETER ScriptArgs
-Remaining arguments are added here.
 
 .LINK
 http://cakebuild.net
-
 #>
 
 [CmdletBinding()]
 Param(
-    [string]$Script = "build.cake",
-    [string]$Target = "Default",
-    [ValidateSet("Release", "Debug")]
-    [string]$Configuration = "Release",
-    [ValidateSet("Quiet", "Minimal", "Normal", "Verbose", "Diagnostic")]
-    [string]$Verbosity = "Verbose",
-	[string]$Bump = "Change",
-	[ValidateSet("Change", "Build", "Revision", "Minor", "Major")]
-    [switch]$Experimental,
-    [Alias("DryRun","Noop")]
-    [switch]$WhatIf,
-    [switch]$Mono,
-    [switch]$SkipToolPackageRestore,
-    [Parameter(Position=0,Mandatory=$false,ValueFromRemainingArguments=$true)]
-    [string[]]$ScriptArgs
+	[string]$Target = "Default",
+    
+	[ValidateSet("Release", "Debug")]
+    [string]$Configuration = "Debug",
+
+	[ValidateSet("Build", "Minor", "Major")]
+	[string]$SegementBump = "Build",
+
+	[int]$NextSegmentThreshold = 50,
+
+	[ValidateSet("Quiet", "Minimal", "Normal", "Verbose", "Diagnostic")]
+    [string]$Verbosity = "Normal"
 )
 
 [Reflection.Assembly]::LoadWithPartialName("System.Security") | Out-Null
@@ -88,6 +70,7 @@ if(!$PSScriptRoot){
     $PSScriptRoot = Split-Path $MyInvocation.MyCommand.Path -Parent
 }
 
+$BUILD_DIR = Join-Path $PSScriptRoot "build"
 $TOOLS_DIR = Join-Path $PSScriptRoot "tools"
 $ARTIFACTS_DIR = Join-Path $PSScriptRoot "artifacts"
 $NUGET_EXE = Join-Path $TOOLS_DIR "nuget.exe"
@@ -95,25 +78,16 @@ $CAKE_EXE = Join-Path $TOOLS_DIR "Cake/Cake.exe"
 $NUGET_URL = "https://dist.nuget.org/win-x86-commandline/latest/nuget.exe"
 $PACKAGES_CONFIG = Join-Path $TOOLS_DIR "packages.config"
 $PACKAGES_CONFIG_MD5 = Join-Path $TOOLS_DIR "packages.config.md5sum"
+$BUILD_SCRIPT = "build.cake"
 
-# Should we use mono?
-$UseMono = "";
-if($Mono.IsPresent) {
-    Write-Verbose -Message "Using the Mono based scripting engine."
-    $UseMono = "-mono"
+# Make sure build directory exits
+if((Test-Path $PSScriptRoot) -and !(Test-Path $BUILD_DIR)){
+	Throw "Build Directory not found at $BUILD_DIR"	
 }
 
-# Should we use the new Roslyn?
-$UseExperimental = "";
-if($Experimental.IsPresent -and !($Mono.IsPresent)) {
-    Write-Verbose -Message "Using experimental version of Roslyn."
-    $UseExperimental = "-experimental"
-}
-
-# Is this a dry run?
-$UseDryRun = "";
-if($WhatIf.IsPresent) {
-    $UseDryRun = "-dryrun"
+# Make sure Build Script exists
+if((Test-Path $PSScriptRoot) -and !(Test-Path $BUILD_SCRIPT)){
+	Throw "Build Script not found at $BUILD_SCRIPT"
 }
 
 # Make sure tools folder exists
@@ -160,32 +134,29 @@ if (!(Test-Path $NUGET_EXE)) {
 # Save nuget.exe path to environment to be available to child processed
 $ENV:NUGET_EXE = $NUGET_EXE
 
-# Restore tools from NuGet?
-if(-Not $SkipToolPackageRestore.IsPresent) {
-    Push-Location
-    Set-Location $TOOLS_DIR
+Push-Location
+Set-Location $TOOLS_DIR
 
-    # Check for changes in packages.config and remove installed tools if true.
-    [string] $md5Hash = MD5HashFile($PACKAGES_CONFIG)
-    if((!(Test-Path $PACKAGES_CONFIG_MD5)) -Or
-      ($md5Hash -ne (Get-Content $PACKAGES_CONFIG_MD5 ))) {
-        Write-Verbose -Message "Missing or changed package.config hash..."
-        Remove-Item * -Recurse -Exclude packages.config,nuget.exe
-    }
-
-    Write-Verbose -Message "Restoring tools from NuGet..."
-    $NuGetOutput = Invoke-Expression "&`"$NUGET_EXE`" install -ExcludeVersion -OutputDirectory `"$TOOLS_DIR`""
-
-    if ($LASTEXITCODE -ne 0) {
-        Throw "An error occured while restoring NuGet tools."
-    }
-    else
-    {
-        $md5Hash | Out-File $PACKAGES_CONFIG_MD5 -Encoding "ASCII"
-    }
-    Write-Verbose -Message ($NuGetOutput | out-string)
-    Pop-Location
+# Check for changes in packages.config and remove installed tools if true.
+[string] $md5Hash = MD5HashFile($PACKAGES_CONFIG)
+if((!(Test-Path $PACKAGES_CONFIG_MD5)) -Or
+    ($md5Hash -ne (Get-Content $PACKAGES_CONFIG_MD5 ))) {
+    Write-Verbose -Message "Missing or changed package.config hash..."
+    Remove-Item * -Recurse -Exclude packages.config,nuget.exe
 }
+
+Write-Verbose -Message "Restoring tools from NuGet..."
+$NuGetOutput = Invoke-Expression "&`"$NUGET_EXE`" install -ExcludeVersion -OutputDirectory `"$TOOLS_DIR`""
+
+if ($LASTEXITCODE -ne 0) {
+    Throw "An error occurred while restoring NuGet tools."
+}
+else
+{
+    $md5Hash | Out-File $PACKAGES_CONFIG_MD5 -Encoding "ASCII"
+}
+Write-Verbose -Message ($NuGetOutput | out-string)
+Pop-Location
 
 # Make sure that Cake has been installed.
 if (!(Test-Path $CAKE_EXE)) {
@@ -194,5 +165,5 @@ if (!(Test-Path $CAKE_EXE)) {
 
 # Start Cake
 Write-Host "Running build script..."
-Invoke-Expression "& `"$CAKE_EXE`" `"$Script`" -target=`"$Target`" -configuration=`"$Configuration`" -bump=`"$Bump`" -verbosity=`"$Verbosity`" $UseMono $UseDryRun $UseExperimental $ScriptArgs"
+Invoke-Expression "& `"$CAKE_EXE`" `"$BUILD_SCRIPT`" -target=`"$Target`" -configuration=`"$Configuration`" -segmentBump=`"$SegementBump`" -nextSegmentThreshold=$NextSegmentThreshold -verbosity=`"$Verbosity`""
 exit $LASTEXITCODE

@@ -1,92 +1,140 @@
-// Install Addins.
-#addin "MagicChunks"
+// Install Add-ins.
 #addin nuget:?package=Cake.Git
+#addin nuget:?package=Newtonsoft.Json
 
 // Install Tools.
 
 // Load Other Scripts.
-#load "./build/parameters.cake";
+#load "build/Constants.cake";
+#load "build/SegmentBump.cake";
+#load "build/Parameters.cake";
+#load "build/SolutionData.cake";
+#load "build/Project.cake";
+#load "build/BuildVersion.cake";
+#load "build/ProjectFile.cake";
+#load "build/ProjectReference.cake";
 
 //////////////////////////////////////////////////////////////////////
 // PARAMETERS
 //////////////////////////////////////////////////////////////////////
 
-Parameters parameters = Parameters.GetParameters(Context);
-bool publishingError = false;
+var parameters = Parameters.CreateNew(Context);
+var solutionData = SolutionData.CreateNew(Context, parameters);
+var setupComplete = false;
+var publishingError = false;
 
 ///////////////////////////////////////////////////////////////////////////////
 // SETUP / TEARDOWN
 ///////////////////////////////////////////////////////////////////////////////
 
-Setup(context =>
-{
-	var solutionChanges = GitDiff(context.Environment.WorkingDirectory.FullPath);
+Setup(context => {
+	Information("Building Solution Information...");
+	solutionData.PopulateSolutionProjects(context, parameters);
+	Information("Adding Project Version Data...");
+	solutionData.AddProjectVersions();
+	Information("Adding Project File Data...");
+	solutionData.AddProjectFiles();
+	Information("Adding Solution Project Reference Data...");
+	solutionData.AddProjectReferences();
+	Information("Calculating Build Order...");
+	solutionData.AddProjectBuildOrder();
 
-	parameters.Initialize(context, solutionChanges);
+	// Load Previous Build Data (if any)
+	if(FileExists(Constants.JsonFile))
+	{
+		Information("`projectData.json` Found{0}Loading previous build data...", Parameters.NewLine(1));
+		var previousBuildDetails = Parameters.ReadJsonFile(Constants.JsonFile);
+		solutionData.CompareProjectsForChanges(previousBuildDetails.Projects);
+	}
+	else
+	{
+		Warning("`projectData.json` not Found{0}All Projects will be require new build.", Parameters.NewLine(1));
+		solutionData.SetAllProjectsToBuild();
+	}
 
+	// DISPLAY SETUP DETAILS
+	// Parameter Information
 	Information("Target: {0}", parameters.Target);
 	Information("Configuration: {0}", parameters.Configuration);
-	Information("Build Bump: {0}", parameters.BumpVersion);
-	Information("IsReleaseBuild: {0}", parameters.IsReleaseBuild);
-	Information("SolutionDirectory: {0}", parameters.SolutionDirectory);
-
-	Information("\n\r--Project States--\n\r");
+	Information("Segment to Bump: {0}", parameters.SegmentBump);
+	Information("Next Segment Threshold: {0}%", parameters.SegmentThreshold);
+	Information("Verbosity: {0}", parameters.Verbosity);
 	
-	foreach(var project in parameters.Projects)
-	{
-		Information("Project: {0}", project.Name);
-		if(project.IsTestProject == false)
-		{
-			Information("Version: {0}", project.Version.GetSemVersion);
-			Information("Is PreRelease: {0}", project.Version.IsPre);
-			Information("Is AlphaRelease: {0}", project.Version.IsAlpha);
-		}		
-		Information("File Name: {0}", project.ProjectFile.GetFilename());
-		Information("Project Path: {0}", project.ProjectPath.FullPath);
-		Information("Build Folder: {0}", project.BuildFolder.FullPath);
+	// Solution Information
+	Information("Solution Directory: {0}", solutionData.SolutionDirectory);
+	Information("Artifact clsDirectory: {0}", solutionData.ArtifactDirectory);
 
-		Information("Is Pending New Version: {0}", project.IsPendingNewVersion);
-		Information("Is Pending Reference Updates: {0}", project.IsPendingReferenceUpdate);
-		Information("Is Pending New Build: {0}", project.IsPendingNewBuild);
-		Information("Is Pending New Package: {0}", project.IsPendingNewPackage);
-		Information("Is Test Project: {0}", project.IsTestProject);
-		Information("Build Order: {0}", project.BuildOrder);
-		Information("Reference:");
-		if(project.ProjectReferences != null && project.ProjectReferences.Any())
+	// Project(s) Information
+	Information("{0}{1}", Parameters.NewLine(1), Parameters.Line(50, Constants.Star));
+	Information("Solution Projects:");
+	Information("{0}", Parameters.Line(50, Constants.Star));
+	foreach(var project in solutionData.Projects)
+	{
+		Information("{0}Project: {1}", Parameters.Indent(1), project.Name);
+		Information("{0}File Name: {1}", Parameters.Indent(1), project.CSProjFile.GetFilename());
+		Information("{0}Project Path: {1}", Parameters.Indent(1), project.ProjectPath.FullPath);
+		Information("{0}Build Folder: {1}", Parameters.Indent(1), project.BuildFolder.FullPath);
+		Information("{0}Is Test Project: {1}", Parameters.Indent(1), project.IsTestProject);
+		if(!project.IsTestProject)
 		{
-			foreach(var reference in project.ProjectReferences)
+			if(parameters.Verbosity == Constants.Verbosity.Verbose)
 			{
-				Information("\t{0} (v{1})", reference.Name, reference.Version);
+				Verbose("{0}Project Files:", Parameters.Indent(1));
+				foreach(var projectFile in project.ProjectFiles)
+				{
+					Verbose("{0}File: {1} ({2})", Parameters.Indent(2), projectFile.Name, projectFile.Hash);
+				}
 			}
+
+			Information("{0}Current Version: {1}", Parameters.Indent(1), project.Version.SemanticVersion);
+			Information("{0}Requires New Version: {1}", Parameters.Indent(1), project.RequiresNewVersion);
+			Information("{0}Percentage of Change: {1}%", Parameters.Indent(1), project.ChangePercentage * 100);
+			Information("{0}Requires New Build: {1}", Parameters.Indent(1), project.RequiresNewBuild);
+			Information("{0}Build Order: {1}", Parameters.Indent(1), project.BuildOrder);
+			Information("{0}Requires Reference Package Updates: {1}", Parameters.Indent(1), project.RequiresReferencePackageUpdates);
+			Information("{0}Solution Project References:", Parameters.Indent(1));
+			if(project.ProjectReferences != null && project.ProjectReferences.Any())
+			{
+				foreach(var reference in project.ProjectReferences)
+				{
+					Information("{0}{1} (v{2})", Parameters.Indent(2), reference.Name, reference.Version);
+				}
+			}
+			else
+			{
+				Information("{0}Project has no Package References", Parameters.Indent(2));
+			}
+
 		}
-		else
-		{
-			Information("\tProject has no Package References");
-		}
-		Information("\n\r");
+		Information("{0}", Parameters.Line(50, Constants.SingleLine));
 	}
+
+	setupComplete = true;
 });
 
-Teardown(context =>
-{
-	Information("Finished running tasks.");
+Teardown(context => {
+	Information("Finished running tasks");
+	if(setupComplete)
+	{
+		Information("Saving {0} File", Constants.JsonFile);
+		Parameters.WriteJsonFile(Constants.JsonFile, solutionData);	
+	}
 });
 
 //////////////////////////////////////////////////////////////////////
 // TASKS
 //////////////////////////////////////////////////////////////////////
-
 Task("Clean-All-Build-Folders")
     .Does(() =>
 	{
-		foreach(var project in parameters.Projects)
+		foreach(var project in solutionData.Projects)
 		{
 			CleanDirectory(project.BuildFolder.FullPath);
 		}
 		
-		var allFiles = GetFiles(parameters.ArtifactDirectory.FullPath + "/*.nupkg");
+		var allFiles = GetFiles(solutionData.ArtifactDirectory.FullPath + "/*.nupkg");
 		Information("Package Files Found: {0}", allFiles.Count());
-		var filesToKeep = parameters.GetLatestNuGetPackageNames();
+		var filesToKeep = solutionData.GetLatestNuGetPackageNames;
 		Information("Package Files To Keep: {0}", filesToKeep.Count());
 		
 		foreach(var file in allFiles)
@@ -102,32 +150,38 @@ Task("Update-Project-Versions")
 	.IsDependentOn("Clean-All-Build-Folders")
 	.Does(() => 
 	{
-		var projectsWithReferences = parameters.Projects.Where(p => p.HasChildReferences());
+		var projectsWithReferences = solutionData.Projects.Where(p => p.HasChildReferences);
 
-		while(parameters.Projects.Any(p => p.IsPendingNewVersion))
+		while(solutionData.Projects.Any(p => p.RequiresNewVersion))
 		{
-			var project = parameters.Projects.FirstOrDefault(p => p.IsPendingNewVersion);
-			var oldVersion = project.Version.GetSemVersion;
-			project.UpdateProjectVersion(VersionBump.Build);
-			Information("Project: `{0}` \n\r\t Updating Version v{1} => v{2}",
-				project.Name, oldVersion, project.Version.GetSemVersion);
-			Information("\n\r--Reference Projects--");
+			var project = solutionData.Projects.FirstOrDefault(p => p.RequiresNewVersion);
+			var oldVersion = project.Version.SemanticVersion;
+			project.BumpBuildVersion(parameters);
+			project.SaveProjectVersion();
+			Information("Project: `{0}`{1}{2}Updating Version v{3} => v{4}",
+				project.Name,
+				Parameters.NewLine(1),
+				Parameters.Indent(1),
+				oldVersion,
+				project.Version.SemanticVersion);
+			
+			Information("{0}--Reference Projects--", Parameters.NewLine(1));
 
 			//TODO: Fix this
 			foreach(var childProject in projectsWithReferences)
 			{
 				if(childProject.ProjectReferences.Any(pr => pr.Name == project.Name))
 				{
-					childProject.FlagForReferenceUpdates();
-					Information("\t{0}", childProject.Name);
+					childProject.RequiresReferencePackageUpdates = true;
+					Information("{0}{1}", Parameters.Indent(1), childProject.Name);
 				}
 				else
 				{
-					Information("\tProject has no Package References");
+					Information("{0}Project has no Package References", Parameters.Indent(1));
 					break;
 				}
 			}
-			Information("\n\r");
+			Information("{0}", Parameters.Line(50, Constants.SingleLine));
 		}
 	});
 
@@ -135,12 +189,11 @@ Task("Update-Project-Reference-Versions")
 	.IsDependentOn("Update-Project-Versions")
 	.Does(context => 
 	{
-		while(parameters.Projects.Any(p => p.IsPendingReferenceUpdate))
+		while(solutionData.Projects.Any(p => p.RequiresReferencePackageUpdates))
 		{
-			var project = parameters.Projects.FirstOrDefault(p => p.IsPendingReferenceUpdate);
+			var project = solutionData.Projects.FirstOrDefault(p => p.RequiresReferencePackageUpdates);
 			Information("Updating References in {0}", project.Name);
-			project.UpdateProjectReference(context, parameters.Projects);
-			Information("\n\r");
+			//project.UpdateProjectReference(context, parameters.Projects);
 		}
 	});
 
@@ -148,11 +201,11 @@ Task("Restore-Build-Package-Projects")
 	.IsDependentOn("Update-Project-Reference-Versions")
 	.Does(() =>
 	{
-		foreach(var project in parameters.Projects.OrderBy(p => p.BuildOrder))
+		foreach(var project in solutionData.Projects.OrderBy(p => p.BuildOrder))
 		{
 			// Restore NuGet Packages for Current Project
 			Information("Starting NuGet Restore for {0}", project.Name);
-			DotNetCoreRestore(project.ProjectFile.FullPath, 
+			DotNetCoreRestore(project.CSProjFile.FullPath, 
 				new DotNetCoreRestoreSettings
 				{
 					ConfigFile = "./nuget.config"
@@ -161,46 +214,39 @@ Task("Restore-Build-Package-Projects")
 
 			// Build Current Project
 			Information("Starting Build for {0}", project.Name);
-			DotNetCoreBuild(project.ProjectFile.FullPath, new DotNetCoreBuildSettings()
+			DotNetCoreBuild(project.CSProjFile.FullPath, new DotNetCoreBuildSettings()
 			{
 				Configuration = parameters.Configuration
 			});
-			project.MarkNewBuildComplete();
+			project.RequiresNewBuild = false;
 			Information("Finished Build for {0}", project.Name);
 
 			// Package Current Project
 			Information("Starting NuGet Packaging for {0}", project.Name);
-			DotNetCorePack(project.ProjectFile.FullPath, 
+			DotNetCorePack(project.CSProjFile.FullPath, 
 				new DotNetCorePackSettings {
 					Configuration = parameters.Configuration,
-					OutputDirectory = parameters.SolutionDirectory + "/artifacts",
+					OutputDirectory = solutionData.ArtifactDirectory.FullPath,
 					NoBuild = true
 				});
-			project.MarkNewPackageComplete();
 			Information("Finished NuGet Packaging for {0}", project.Name);
+			
+			// Update Project File Hashes
+			Information("Starting Hash Update for {0}", project.Name);
+			project.UpdateProjectFileHash();
+			Information("Finished Hash Update for {0}", project.Name);
+			Information("{0}", Parameters.Line(50, Constants.SingleLine));
 		}
 	});
 
-Task("Update-Test-Reference-Versions")
+Task("Restore-Build-Tests")
 	.IsDependentOn("Restore-Build-Package-Projects")
-	.Does(context =>
-	{
-		foreach(var testProject in parameters.Tests)
-		{
-			Information("Updating References in {0}", testProject.Name);
-			testProject.UpdateProjectReference(context, parameters.Projects);
-			Information("\n\r");
-		}
-	});
-
-Task("Restore-Build-Package-Tests")
-	.IsDependentOn("Update-Test-Reference-Versions")
 	.Does(() =>
 	{
-		foreach(var testProject in parameters.Tests)
+		foreach(var testProject in solutionData.Tests)
 		{
 			Information("Starting NuGet Restore for {0}", testProject.Name);
-			DotNetCoreRestore(testProject.ProjectFile.FullPath, 
+			DotNetCoreRestore(testProject.CSProjFile.FullPath, 
 				new DotNetCoreRestoreSettings
 				{
 					ConfigFile = "./nuget.config"
@@ -208,23 +254,22 @@ Task("Restore-Build-Package-Tests")
 			Information("Finished NuGet Restore for {0}", testProject.Name);
 
 			Information("Starting Build for {0}", testProject.Name);
-			DotNetCoreBuild(testProject.ProjectFile.FullPath, new DotNetCoreBuildSettings()
+			DotNetCoreBuild(testProject.CSProjFile.FullPath, new DotNetCoreBuildSettings()
 			{
 				Configuration = parameters.Configuration
 			});
-			testProject.MarkNewBuildComplete();
 			Information("Finished Build for {0}", testProject.Name);
 		}
 	});
 	
 Task("Run-Tests")
-	.IsDependentOn("Restore-Build-Package-Tests")
+	.IsDependentOn("Restore-Build-Tests")
 	.Does(() =>
 	{
-		foreach(var testProject in parameters.Tests)
+		foreach(var testProject in solutionData.Tests)
 		{
 			Information("Starting Tests for {0}", testProject.Name);
-			DotNetCoreTest(testProject.ProjectFile.FullPath,
+			DotNetCoreTest(testProject.CSProjFile.FullPath,
 				new DotNetCoreTestSettings()
 				{
 					Configuration = parameters.Configuration,

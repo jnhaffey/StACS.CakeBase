@@ -1,57 +1,122 @@
-using System.Linq;
-using System.Xml;
-using System.Xml.Linq;
-using System.Xml.XPath;
+using Newtonsoft.Json;
 
 public class Project
 {
-	public string Name { get; private set; }
-	public BuildVersion Version { get; set; }
-	public FilePath  ProjectFile { get; private set; }
-	public DirectoryPath ProjectPath { get; private set; }
-	public DirectoryPath BuildFolder { get; private set; }
-	public bool IsPendingNewVersion { get; private set; }
-	public bool IsPendingReferenceUpdate { get; private set; }
-	public bool IsPendingNewBuild { get; private set; }
-	public bool IsPendingNewPackage {get; private set; }
-	public bool IsTestProject { get; private set; }
-	public ICollection<ProjectReference> ProjectReferences { get; set; }
-	public int BuildOrder { get; set; }
+    public string Name { get; set; }
+    [JsonIgnore]
+    public int BuildOrder { get; set; }
+    [JsonIgnore]
+    public BuildVersion Version { get; set; }
+    [JsonIgnore]
+    public List<ProjectReference> ProjectReferences { get; set; }
+    public List<ProjectFile> ProjectFiles { get; set; }
+    [JsonIgnore]
+    public decimal ChangePercentage { get; set; }
+    [JsonIgnore]
+    public FilePath CSProjFile { get; set; }
+    [JsonIgnore]
+    public DirectoryPath ProjectPath { get; set; }
+    [JsonIgnore]
+    public DirectoryPath BuildFolder { get; set; }
+    [JsonIgnore]
+    public bool IsTestProject { get; set; }
+    [JsonIgnore]
+    public bool RequiresNewBuild { get; set; }
+    [JsonIgnore]
+    public bool RequiresNewVersion { get; set; }
+    [JsonIgnore]
+    public bool RequiresReferencePackageUpdates { get; set; }
 
-	public static ICollection<Project> GetProjects(ICakeContext context, Parameters parameters)
+	public static Project CreateNew(FilePath project, string buildDirectory)
 	{
-	    if (context == null)
+		return new Project
         {
-            throw new ArgumentNullException("context");
-        }
-
-		var projectList = context.GetFiles("./**/*.csproj");
-
-		if(projectList.Count() > 0)
-		{
-			var returnList = new List<Project>();
-			foreach(var project in projectList)
-			{
-				var buildDir = project.GetDirectory().ToString() + "/bin/" + parameters.Configuration;
-				returnList.Add(new Project
-				{
-					Name = project.GetFilenameWithoutExtension().ToString(),
-					ProjectFile = project,
-					ProjectPath = project.GetDirectory(),
-					BuildFolder = new DirectoryPath(buildDir),
-					IsTestProject = project.GetFilename().ToString().IndexOf("test", StringComparison.OrdinalIgnoreCase) >= 0
-				});
-			}
-			return returnList;
-		}
-		return null;
+            Name = project.GetFilenameWithoutExtension().ToString(),
+            BuildOrder = 0,
+            ProjectReferences = new List<ProjectReference>(),
+            ProjectFiles = new List<ProjectFile>(),
+            CSProjFile = project,
+            ProjectPath = project.GetDirectory(),
+            BuildFolder = new DirectoryPath(buildDirectory),
+            IsTestProject = project.GetFilename().ToString().IndexOf("test", StringComparison.OrdinalIgnoreCase) >= 0,
+            RequiresNewBuild = false
+        };
 	}
 
-	public void CheckForChanges(ICollection<GitDiffFile> getDiffs, Parameters parameters)
+	public void AddProjectVersion()
 	{
-		if(parameters.BumpVersion == VersionBump.Default && getDiffs.Count() > 0)
+		this.Version = BuildVersion.CreateNew(this);
+	}
+
+	public void AddProjectFiles()
+	{
+		var files = System.IO.Directory.GetFiles(this.ProjectPath.FullPath, "*.*", SearchOption.AllDirectories)
+		.Where(f => !Constants.IgnoreList.Any(il => f.Contains(il)))
+		.ToList();
+
+		foreach(var file in files)
 		{
-			this.FlagForNewVersion();
+			this.ProjectFiles.Add(ProjectFile.CreateNew(file.Replace('/','\\')));
+		}
+	}
+
+	public void UpdateProjectFileHash()
+	{
+		foreach(var file in this.ProjectFiles)
+		{
+			file.GenerateHash();
+		}
+	}
+
+	public void AddProjectReferences(List<Project> allSolutionProjects)
+	{
+		var projectFile = XElement.Load(this.CSProjFile.FullPath);
+		var references = projectFile.Descendants("PackageReference").ToList();
+		var listOfReferences = new List<ProjectReference>();
+		foreach(var reference in references)
+		{
+			var referenceName = reference.Attribute("Include").Value;
+			if(allSolutionProjects.FirstOrDefault(p => p.Name.Contains(referenceName)) != null)
+			{
+				listOfReferences.Add(ProjectReference.CreateNew(referenceName, new Version(reference.Attribute("Version").Value)));
+			}
+		}
+	}
+
+	public void SaveProjectVersion()
+	{
+		var projectFile = XElement.Load(this.CSProjFile.FullPath);
+		var currentVersion = projectFile.Descendants("Version").FirstOrDefault();
+		if(currentVersion != null)
+		{
+			currentVersion.Value = this.Version.SemanticVersion;
+		}
+		projectFile.Save(this.CSProjFile.FullPath);
+		this.RequiresNewVersion = false;	
+	}
+
+	public void BumpBuildVersion(Parameters parameters)
+	{
+		var segmentToBump = parameters.SegmentBump;
+		if(parameters.SegmentThreshold <= (this.ChangePercentage*100) && segmentToBump != SegmentBump.Major)
+		{
+			segmentToBump++;
+		}
+
+		switch(segmentToBump)
+		{
+			case SegmentBump.Build:
+				this.Version.Build++;
+				break;
+			case SegmentBump.Minor:
+				this.Version.Build = 0;
+				this.Version.Minor++;
+				break;
+			case SegmentBump.Major:
+				this.Version.Build = 0;
+				this.Version.Minor = 0;
+				this.Version.Major++;
+				break;
 		}
 	}
 
@@ -63,138 +128,11 @@ public class Project
 		}
 	}
 
-	public void AddProjectReferenceData(ICollection<string> solutionProjectNames)
+	public bool HasChildReferences
 	{
-		var projectFile = XElement.Load(this.ProjectFile.FullPath);
-		var references = projectFile.Descendants("PackageReference").ToList();
-		this.ProjectReferences = new List<ProjectReference>();
-		foreach(var reference in references)
+		get
 		{
-			var referenceName = reference.Attribute("Include").Value;
-			if(solutionProjectNames.Contains(referenceName))
-			{
-				this.ProjectReferences.Add(new ProjectReference
-				{
-					Name = referenceName,
-					Version = new Version(reference.Attribute("Version").Value)
-				});
-			}
+			return this.ProjectReferences != null && this.ProjectReferences.Any();	
 		}		
 	}
-
-	public void UpdateProjectVersion(VersionBump bump)
-	{
-		switch(bump)
-		{
-			case VersionBump.Build:
-				this.Version.BumpBuild();
-			break;
-			case VersionBump.Revision:
-				this.Version.BumpRevision();
-			break;
-			case VersionBump.Minor:
-				this.Version.BumpMinor();
-			break;
-			case VersionBump.Major:
-				this.Version.BumpMajor();
-			break;
-		}
-		this.Version.UpdateProjectVersion(this);
-		this.IsPendingNewVersion = false;
-	}
-
-	public void BuildComplete()
-	{
-		this.IsPendingNewBuild = false;
-	}
-
-	public void PackagingComplete()
-	{
-		this.IsPendingNewPackage = false;
-	}
-
-	public bool HasChildReferences()
-	{
-		return this.ProjectReferences.Any();
-	}
-
-	public void UpdateProjectReference(ICakeContext context, ICollection<Project> projectList)
-	{
-		var projectFile = XElement.Load(this.ProjectFile.FullPath);
-		var references = projectFile.Descendants("PackageReference").ToList();
-		foreach(var refProject in this.ProjectReferences)
-		{
-			var project = projectList.FirstOrDefault(p => p.Name == refProject.Name);
-			if(project != null && project.Version.GetSemVersion != refProject.Version.ToString())
-			{
-				var reference = references.FirstOrDefault(r => r.Attribute("Include").Value == refProject.Name);
-				if(reference != null)
-				{
-					context.Information("\tUpdating Reference `{0}` Version | {1} => {2}",
-						refProject.Name,
-						reference.Attribute("Version").Value,
-						project.Version.GetSemVersion);
-					reference.Attribute("Version").Value = project.Version.GetSemVersion;
-				}
-				else
-				{
-					throw new Exception("Refences Not Found in CSPROJ File");
-				}
-			}
-			else
-			{
-				throw new Exception("Missing Project or Bad Version Reference");
-			}
-		}
-		projectFile.Save(this.ProjectFile.FullPath);
-		this.IsPendingReferenceUpdate = false;
-	}
-
-	public void FlagForReferenceUpdates()
-	{
-		this.IsPendingReferenceUpdate = true;
-		FlagForNewVersion();
-	}
-
-	public void FlagForNewVersion()
-	{
-		this.IsPendingNewVersion = true;
-		this.FlagForNewBuild();
-	}
-
-	public void FlagForNewBuild()
-	{
-		this.IsPendingNewBuild = true;
-		this.FlagForNewPackage();
-	}
-
-	public void MarkNewBuildComplete()
-	{
-		this.IsPendingNewBuild = false;
-	}
-
-	public void FlagForNewPackage()
-	{
-		this.IsPendingNewPackage = true;
-	}
-
-	public void MarkNewPackageComplete()
-	{
-		this.IsPendingNewPackage = false;
-	}
-}
-
-public class ProjectReference
-{
-	public string Name { get; set; }
-	public Version Version { get; set; }
-}
-
-public enum VersionBump
-{
-	Default,
-	Build,
-	Revision,
-	Minor,
-	Major
 }
